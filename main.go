@@ -116,7 +116,8 @@ func logIp(w http.ResponseWriter, r *http.Request) {
 	log.Println("headers:", r.Header)
 	ip := r.Header.Get("X-Forwarded-For")
 	if ip == "" {
-		ip = r.RemoteAddr
+		parts := strings.Split(ip, ",")
+        return strings.TrimSpace(parts[0])
 	}
 
 	message := fmt.Sprintf("IP Address: %s", ip)
