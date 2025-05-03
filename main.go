@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
 	"golang.org/x/net/html"
 	"github.com/joho/godotenv"
@@ -116,8 +117,10 @@ func logIp(w http.ResponseWriter, r *http.Request) {
 	log.Println("headers:", r.Header)
 	ip := r.Header.Get("X-Forwarded-For")
 	if ip == "" {
+		ip = r.RemoteAddr
+	} else {
 		parts := strings.Split(ip, ",")
-        return strings.TrimSpace(parts[0])
+		ip = strings.TrimSpace(parts[0])
 	}
 
 	message := fmt.Sprintf("IP Address: %s", ip)
